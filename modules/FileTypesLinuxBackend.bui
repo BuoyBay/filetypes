@@ -1,0 +1,55 @@
+' Internal Linux GLib/GIO (>= 2.34) backend for FileTypes.bui guesses.
+' Adapted from containers/integrations/linux/linuxcontent.bui (GuessFilename,
+' MimeType, FromMimeType). Imported only by FileTypes.bui under
+' #If TargetLinux; not public API. Missing libraries raise the built-in
+' LibraryUnavailableException from the Optional Declare binding.
+
+#If TargetLinux Then
+Private Optional Declare Function NativeGuess Lib "libgio-2.0.so.0" Alias "g_content_type_guess" (filename As CString, data As Ptr, size As UInt64, ByRef uncertain As Int32) As CString
+Private Optional Declare Function NativeMime Lib "libgio-2.0.so.0" Alias "g_content_type_get_mime_type" (contentType As CString) As CString
+Private Optional Declare Function NativeFromMime Lib "libgio-2.0.so.0" Alias "g_content_type_from_mime_type" (mimeType As CString) As CString
+Private Optional Declare Sub NativeFree Lib "libglib-2.0.so.0" Alias "g_free" (text As Ptr)
+
+Private Function CopyOwned(text As CString) As String
+    If text = Nil Then
+        Throw New RuntimeException("GIO returned no content-type text")
+    End If
+    Try
+        Return CType(text, String)
+    Finally
+        NativeFree(text)
+    End Try
+End Function
+
+Private Function CopyOptional(text As CString) As Optional Of String
+    If text = Nil Then
+        Return None
+    End If
+    Try
+        Return Some(CType(text, String))
+    Finally
+        NativeFree(text)
+    End Try
+End Function
+
+''' Library probe only (dlopen); does not start services or read files.
+Public Function FileTypesLinuxAvailable() As Boolean
+    Return System.IsLibraryAvailable("libgio-2.0.so.0") And System.IsLibraryAvailable("libglib-2.0.so.0")
+End Function
+
+''' g_content_type_guess by name only (data = NULL); never opens the file.
+Public Function FileTypesLinuxGuess(filename As String, ByRef uncertain As Boolean) As String
+    Dim flag As Int32 = 0
+    Dim guessed As String = CopyOwned(NativeGuess(CType(filename, CString), Nil, 0, flag))
+    uncertain = flag <> 0
+    Return guessed
+End Function
+
+Public Function FileTypesLinuxMIMEType(contentType As String) As Optional Of String
+    Return CopyOptional(NativeMime(CType(contentType, CString)))
+End Function
+
+Public Function FileTypesLinuxFromMIMEType(mimeType As String) As Optional Of String
+    Return CopyOptional(NativeFromMime(CType(mimeType, CString)))
+End Function
+#End If

@@ -1,0 +1,352 @@
+#If TargetLinux Then
+Import FileTypesLinuxBackend As FileTypesBackend
+#ElseIf TargetWindows Then
+Import FileTypesWindowsBackend As FileTypesBackend
+#End If
+
+''' Frozen: True only where the original macOS UTType FileTypeInfo backend
+''' runs. FileTypeInfo stays macOS-only; portable name-based guesses use
+''' GuessFileType, gated by FileTypeGuessSupported.
+Public Function FileTypesSupported() As Boolean
+    #If TargetMac Then
+        Return True
+    #Else
+        Return False
+    #End If
+End Function
+
+#If TargetMac Then
+    Private Declare Function NativeClass Lib "objc" Alias "objc_getClass" (name As String) As Ptr
+    Private Declare Function Allocate Lib "Foundation" Selector "alloc" (cls As Ptr) As Ptr
+    Private Declare Function InitObject Lib "Foundation" Selector "init" (object As Ptr) As Ptr
+    Private Declare Function NewPool Lib "Foundation" Selector "new" (cls As Ptr) As Ptr
+    Private Declare Sub DrainPool Lib "Foundation" Selector "drain" (pool As Ptr)
+    Private Declare Sub ReleaseObject Lib "CoreFoundation" Alias "CFRelease" (value As Ptr)
+    Private Function NativeText(value As Ptr) As String
+        If value = Nil Then Return ""
+        Return CType(CType(value, CFStringRef), String)
+    End Function
+    Private Declare Function LoadFramework Lib "c" Alias "dlopen" (filePath As String, loadFlags As Int32) As Ptr
+    Private Declare Function TypeForExtension Lib "Foundation" Selector "typeWithFilenameExtension:" (cls As Ptr, fileExtension As Ptr) As Ptr
+    Private Declare Function TypeForIdentifier Lib "Foundation" Selector "typeWithIdentifier:" (cls As Ptr, identifier As Ptr) As Ptr
+    Private Declare Function TypeIdentifier Lib "Foundation" Selector "identifier" (typeObject As Ptr) As Ptr
+    Private Declare Function TypeDescription Lib "Foundation" Selector "localizedDescription" (typeObject As Ptr) As Ptr
+    Private Declare Function TypeExtension Lib "Foundation" Selector "preferredFilenameExtension" (typeObject As Ptr) As Ptr
+    Private Declare Function TypeMIME Lib "Foundation" Selector "preferredMIMEType" (typeObject As Ptr) As Ptr
+    Private Declare Function IsDynamic Lib "Foundation" Selector "isDynamic" (typeObject As Ptr) As UInt8
+    Private Declare Function Conforms Lib "Foundation" Selector "conformsToType:" (typeObject As Ptr, parent As Ptr) As UInt8
+    Private Declare Function TypeForMIME Lib "Foundation" Selector "typeWithMIMEType:" (cls As Ptr, mimeType As Ptr) As Ptr
+    Private Class TypeFramework
+        Public Shared Property Handle As Ptr = Nil
+        Public Shared Property Guard As Mutex = New Mutex()
+    End Class
+    Private Function TypeClass() As Ptr
+        SyncLock TypeFramework.Guard
+            If TypeFramework.Handle = Nil Then TypeFramework.Handle = LoadFramework("/System/Library/Frameworks/UniformTypeIdentifiers.framework/UniformTypeIdentifiers", 1)
+            Dim cls As Ptr = NativeClass("UTType")
+            If cls = Nil Then Throw New UnsupportedOperationException("Uniform types require macOS 11 or newer")
+            Return cls
+        End SyncLock
+    End Function
+#End If
+
+Private Sub ValidateText(value As String, label As String)
+    If String.Trim(value) = "" Then Throw New InvalidArgumentException(label + " is required")
+    For Each character As String In String.Chars(value)
+        If String.Asc(character) = 0 Then Throw New InvalidArgumentException(label + " contains NUL")
+    Next
+End Sub
+
+Public Class FileTypeInfo
+    Private Property mIdentifier As String = ""
+    Public Property Identifier As String
+        Get
+            Return Me.mIdentifier
+        End Get
+    End Property
+    Private Property mDescription As String = ""
+    Public Property Description As String
+        Get
+            Return Me.mDescription
+        End Get
+    End Property
+    Private Property mExtension As String = ""
+    Public Property Extension As String
+        Get
+            Return Me.mExtension
+        End Get
+    End Property
+    Private Property mMIMEType As String = ""
+    Public Property MIMEType As String
+        Get
+            Return Me.mMIMEType
+        End Get
+    End Property
+    Private Property mIsDynamic As Boolean = False
+    Public Property IsDynamic As Boolean
+        Get
+            Return Me.mIsDynamic
+        End Get
+    End Property
+    Public Sub Constructor(fileExtension As String)
+        ValidateText(fileExtension, "Filename extension")
+        If String.Left(fileExtension, 1) = "." Then fileExtension = String.Right(fileExtension, String.Len(fileExtension) - 1)
+        ValidateText(fileExtension, "Filename extension")
+        If String.Contains(fileExtension, "/") Or String.Contains(fileExtension, "\\") Then Throw New InvalidArgumentException("Pass an extension, not a path")
+        #If TargetMac Then
+            Dim pool As Ptr = NewPool(NativeClass("NSAutoreleasePool"))
+            Dim text As CFStringRef = CType(fileExtension, CFStringRef)
+            Try
+                Dim value As Ptr = TypeForExtension(TypeClass(), text)
+                If value = Nil Then Throw New InvalidArgumentException("No uniform type could be determined")
+                Me.mIdentifier = NativeText(TypeIdentifier(value))
+                Me.mDescription = NativeText(TypeDescription(value))
+                Me.mExtension = NativeText(TypeExtension(value))
+                Me.mMIMEType = NativeText(TypeMIME(value))
+                Me.mIsDynamic = IsDynamic(value) <> 0
+            Finally
+                ReleaseObject(text)
+                DrainPool(pool)
+            End Try
+        #Else
+            Throw New UnsupportedOperationException("Uniform types require macOS")
+        #End If
+    End Sub
+    Public Function ConformsTo(identifier As String) As Boolean
+        ValidateText(identifier, "Parent type identifier")
+        #If TargetMac Then
+            Dim pool As Ptr = NewPool(NativeClass("NSAutoreleasePool"))
+            Dim ownText As CFStringRef = CType(Me.mIdentifier, CFStringRef)
+            Dim parentText As CFStringRef = CType(identifier, CFStringRef)
+            Try
+                Dim ownType As Ptr = TypeForIdentifier(TypeClass(), ownText)
+                Dim parent As Ptr = TypeForIdentifier(TypeClass(), parentText)
+                If parent = Nil Then Return False
+                Return Conforms(ownType, parent) <> 0
+            Finally
+                ReleaseObject(ownText)
+                ReleaseObject(parentText)
+                DrainPool(pool)
+            End Try
+        #Else
+            Throw New UnsupportedOperationException("Uniform types require macOS")
+        #End If
+    End Function
+End Class
+
+''' True when this compile target has a GuessFileType backend: macOS UTType,
+''' Linux GIO, Windows HKEY_CLASSES_ROOT. Compile-time only. Also gates
+''' MIMETypeForIdentifier and IdentifierFromMIMEType.
+Public Function FileTypeGuessSupported() As Boolean
+    #If TargetMac Or TargetLinux Or TargetWindows Then
+        Return True
+    #Else
+        Return False
+    #End If
+End Function
+
+''' Probe, never prompts. macOS: dlopen of the UniformTypeIdentifiers system
+''' framework (False before macOS 11). Linux: library probe for libgio/libglib;
+''' it does not prove a shared-mime-info database is installed. Windows:
+''' library probe for advapi32. False on unsupported targets.
+Public Function FileTypeGuessAvailable() As Boolean
+    #If TargetMac Then
+        Try
+            Return TypeClass() <> Nil
+        Catch e As UnsupportedOperationException
+            Return False
+        End Try
+    #ElseIf TargetLinux Then
+        Return FileTypesBackend.FileTypesLinuxAvailable()
+    #ElseIf TargetWindows Then
+        Return System.IsLibraryAvailable("advapi32")
+    #Else
+        Return False
+    #End If
+End Function
+
+' Extension of the last path component without the dot, or "" for none
+' (including dot-files such as ".profile" and names ending in ".").
+Private Function NameExtension(fileName As String) As String
+    Dim lastName As String = fileName
+    Dim cut As Integer = String.LastIndexOfBytes(lastName, "/")
+    #If TargetWindows Then
+        Dim backslash As Integer = String.LastIndexOfBytes(lastName, "\\")
+        If backslash > cut Then cut = backslash
+    #End If
+    If cut >= 0 Then lastName = String.MidBytes(lastName, cut + 2)
+    Dim dot As Integer = String.LastIndexOfBytes(lastName, ".")
+    If dot <= 0 Then Return ""
+    Return String.MidBytes(lastName, dot + 2)
+End Function
+
+''' A name-based file-type guess. Identifier is in the platform's native
+''' namespace (IdentifierNamespace): never compare it across platforms, and a
+''' GIO content type is not a UTType even when it looks like a MIME string.
+Public Class FileTypeGuess
+    Internal Property mIdentifier As String = ""
+    ''' macOS UTI ("public.plain-text"), Linux GIO content type ("text/plain"),
+    ''' or Windows lower-case extension key (".txt"; "*" for a name with no
+    ''' extension).
+    Public Property Identifier As String
+        Get
+            Return Me.mIdentifier
+        End Get
+    End Property
+    Internal Property mIdentifierNamespace As String = ""
+    ''' Exactly one of "macos-uti", "gio-content-type", "windows-file-extension".
+    Public Property IdentifierNamespace As String
+        Get
+            Return Me.mIdentifierNamespace
+        End Get
+    End Property
+    Internal Property mMIMEType As Optional Of String = None
+    ''' Preferred MIME type, or None when the platform has none registered.
+    Public Property MIMEType As Optional Of String
+        Get
+            Return Me.mMIMEType
+        End Get
+    End Property
+    Internal Property mIsUncertain As Boolean = False
+    ''' macOS: no extension or a dynamic (undeclared) type. Linux: GIO's own
+    ''' result_uncertain flag. Windows: no extension, or no registered
+    ''' Content Type for it.
+    Public Property IsUncertain As Boolean
+        Get
+            Return Me.mIsUncertain
+        End Get
+    End Property
+    Internal Sub Constructor()
+    End Sub
+End Class
+
+''' Guesses a file type from fileName alone (a name or path). Never opens,
+''' reads or stats the file, and never prompts. InvalidArgumentException for an
+''' empty or NUL-containing name; UnsupportedOperationException on targets
+''' without a backend; Linux raises LibraryUnavailableException without GIO.
+Public Function GuessFileType(fileName As String) As FileTypeGuess
+    ValidateText(fileName, "File name")
+    Dim guess As New FileTypeGuess()
+    #If TargetMac Then
+        guess.mIdentifierNamespace = "macos-uti"
+        Dim fileExtension As String = NameExtension(fileName)
+        If fileExtension = "" Then
+            guess.mIdentifier = "public.data"
+            guess.mIsUncertain = True
+            Return guess
+        End If
+        Dim pool As Ptr = NewPool(NativeClass("NSAutoreleasePool"))
+        Dim text As CFStringRef = CType(fileExtension, CFStringRef)
+        Try
+            Dim value As Ptr = TypeForExtension(TypeClass(), text)
+            If value = Nil Then
+                guess.mIdentifier = "public.data"
+                guess.mIsUncertain = True
+            Else
+                guess.mIdentifier = NativeText(TypeIdentifier(value))
+                Dim mime As String = NativeText(TypeMIME(value))
+                If mime <> "" Then guess.mMIMEType = Some(mime)
+                guess.mIsUncertain = IsDynamic(value) <> 0
+            End If
+        Finally
+            ReleaseObject(text)
+            DrainPool(pool)
+        End Try
+    #ElseIf TargetLinux Then
+        guess.mIdentifierNamespace = "gio-content-type"
+        Dim uncertain As Boolean = False
+        guess.mIdentifier = FileTypesBackend.FileTypesLinuxGuess(fileName, uncertain)
+        guess.mIsUncertain = uncertain
+        guess.mMIMEType = FileTypesBackend.FileTypesLinuxMIMEType(guess.mIdentifier)
+    #ElseIf TargetWindows Then
+        guess.mIdentifierNamespace = "windows-file-extension"
+        Dim fileExtension As String = NameExtension(fileName)
+        If fileExtension = "" Then
+            guess.mIdentifier = "*"
+            guess.mIsUncertain = True
+            Return guess
+        End If
+        guess.mIdentifier = "." + String.LCase(fileExtension)
+        guess.mMIMEType = FileTypesBackend.FileTypesWindowsContentType(guess.mIdentifier)
+        guess.mIsUncertain = Not guess.mMIMEType.HasValue
+    #Else
+        Throw New UnsupportedOperationException("File-type guesses require macOS, Linux or Windows")
+    #End If
+    Return guess
+End Function
+
+''' Preferred MIME type for a native identifier from GuessFileType (same
+''' platform namespace). None when no MIME type is registered.
+Public Function MIMETypeForIdentifier(identifier As String) As Optional Of String
+    ValidateText(identifier, "File-type identifier")
+    #If TargetMac Then
+        Dim pool As Ptr = NewPool(NativeClass("NSAutoreleasePool"))
+        Dim text As CFStringRef = CType(identifier, CFStringRef)
+        Try
+            Dim value As Ptr = TypeForIdentifier(TypeClass(), text)
+            If value = Nil Then Return None
+            Dim mime As String = NativeText(TypeMIME(value))
+            If mime = "" Then Return None
+            Return Some(mime)
+        Finally
+            ReleaseObject(text)
+            DrainPool(pool)
+        End Try
+    #ElseIf TargetLinux Then
+        Return FileTypesBackend.FileTypesLinuxMIMEType(identifier)
+    #ElseIf TargetWindows Then
+        ' GuessFileType uses this sentinel for names without an extension.
+        If identifier = "*" Then Return None
+        If Not String.StartsWith(identifier, ".") Or String.Contains(identifier, "\\") Then Throw New InvalidArgumentException("Windows file-type identifiers are extension keys such as .txt")
+        Return FileTypesBackend.FileTypesWindowsContentType(identifier)
+    #Else
+        Throw New UnsupportedOperationException("File-type guesses require macOS, Linux or Windows")
+    #End If
+End Function
+
+Private Sub ValidateMIMEType(mimeType As String)
+    ValidateText(mimeType, "MIME type")
+    Dim sawSlash As Boolean = False
+    Dim componentLength As Integer = 0
+    For Each character As String In String.Chars(mimeType)
+        Dim code As Integer = String.Asc(character)
+        If character = "/" Then
+            If sawSlash Or componentLength = 0 Then Throw New InvalidArgumentException("MIME type must have the form type/subtype")
+            sawSlash = True
+            componentLength = 0
+        Else
+            ' RFC 2045 token: printable ASCII except tspecials. Preserve case.
+            If code <= 32 Or code >= 127 Or String.Contains("()<>@,;:\"/[]?=\\", character) Then Throw New InvalidArgumentException("MIME type components must be tokens")
+            componentLength += 1
+        End If
+    Next
+    If Not sawSlash Or componentLength = 0 Then Throw New InvalidArgumentException("MIME type must have the form type/subtype")
+End Sub
+
+''' Native identifier for a MIME type: a declared UTI on macOS (dynamic types
+''' give None), a GIO content type on Linux, a registered extension key on
+''' Windows. None when the platform has no mapping.
+Public Function IdentifierFromMIMEType(mimeType As String) As Optional Of String
+    ValidateMIMEType(mimeType)
+    #If TargetMac Then
+        Dim pool As Ptr = NewPool(NativeClass("NSAutoreleasePool"))
+        Dim text As CFStringRef = CType(mimeType, CFStringRef)
+        Try
+            Dim value As Ptr = TypeForMIME(TypeClass(), text)
+            If value = Nil Then Return None
+            If IsDynamic(value) <> 0 Then Return None
+            Return Some(NativeText(TypeIdentifier(value)))
+        Finally
+            ReleaseObject(text)
+            DrainPool(pool)
+        End Try
+    #ElseIf TargetLinux Then
+        Return FileTypesBackend.FileTypesLinuxFromMIMEType(mimeType)
+    #ElseIf TargetWindows Then
+        Dim found As Optional Of String = FileTypesBackend.FileTypesWindowsExtensionForMIMEType(mimeType)
+        If found.HasValue Then Return Some(String.LCase(found.Value))
+        Return None
+    #Else
+        Throw New UnsupportedOperationException("File-type guesses require macOS, Linux or Windows")
+    #End If
+End Function

@@ -1,0 +1,79 @@
+' Internal Windows backend for FileTypes.bui: read-only HKEY_CLASSES_ROOT
+' lookups of the documented "Content Type" (per extension) and MIME database
+' "Extension" values. String reading is adapted from
+' containers/integrations/windows/WinRegistry.bui. Nothing is ever written.
+' Imported only by FileTypes.bui under #If TargetWindows; not public API.
+
+#If TargetWindows Then
+Private Optional Declare Function NativeGet Lib "advapi32" Alias "RegGetValueW" (key As Ptr, subkey As Ptr, name As Ptr, queryFlags As UInt32, ByRef valueType As UInt32, data As Ptr, ByRef size As UInt32) As Int32
+
+Private Function ClassesRoot() As Ptr
+    ' HKEY_CLASSES_ROOT is a sign-extended predefined 32-bit pseudo-handle.
+    Return CType(-2147483648, Ptr)
+End Function
+
+Private Sub Fail(operation As String, code As Integer)
+    Throw New RuntimeException(operation + " failed (Win32 error " + Str(code) + ")", code)
+End Sub
+
+Private Function Wide(value As String) As Bytes
+    Dim encoded As Bytes = value.AsUTF16LE()
+    encoded.Append(0)
+    encoded.Append(0)
+    Return encoded
+End Function
+
+' One REG_SZ value from HKCR\subKey; None when the key or value is absent.
+Private Function ReadClassesString(subKey As String, name As String) As Optional Of String
+    Dim keyText As Bytes = Wide(subKey)
+    Dim valueName As Bytes = Wide(name)
+    Dim valueType As UInt32 = 0
+    Dim size As UInt32 = 0
+    ' RRF_RT_REG_SZ | RRF_NOEXPAND, preserving exact stored string type.
+    Dim code As Integer = NativeGet(ClassesRoot(), keyText.DataPtr(), valueName.DataPtr(), 268435458, valueType, Nil, size)
+    If code = 2 Or code = 3 Then
+        Return None
+    ElseIf code <> 0 Then
+        Fail("RegGetValueW(size)", code)
+    End If
+    For attempt As Integer = 1 To 4
+        If size > 65536 Then
+            Throw New RuntimeException("Registry file-type string exceeds 64 KiB")
+        End If
+        ' Extra capacity lets RegGetValue repair a missing native terminator.
+        Dim capacity As Integer = size + 2
+        Dim buffer As New Bytes(capacity)
+        For i As Integer = 1 To capacity
+            buffer.Append(0)
+        Next
+        size = capacity
+        code = NativeGet(ClassesRoot(), keyText.DataPtr(), valueName.DataPtr(), 268435458, valueType, buffer.DataPtr(), size)
+        If code = 234 Then
+            Continue For
+        ElseIf code = 2 Or code = 3 Then
+            Return None
+        ElseIf code <> 0 Then
+            Fail("RegGetValueW(data)", code)
+        End If
+        If size < 2 Or size Mod 2 <> 0 Or size > capacity Then
+            Throw New RuntimeException("Registry returned an invalid UTF-16 string size")
+        End If
+        Dim exact As New Bytes(size - 2)
+        exact.Append(buffer.DataPtr(), size - 2)
+        Dim text As String = String.FromUTF16LE(exact)
+        If text = "" Then Return None
+        Return Some(text)
+    Next
+    Throw New RuntimeException("Registry file-type value kept changing size")
+End Function
+
+''' HKCR\<.ext> "Content Type"; None when the extension has no registered MIME type.
+Public Function FileTypesWindowsContentType(extensionKey As String) As Optional Of String
+    Return ReadClassesString(extensionKey, "Content Type")
+End Function
+
+''' HKCR\MIME\Database\Content Type\<mime> "Extension"; None when unregistered.
+Public Function FileTypesWindowsExtensionForMIMEType(mimeType As String) As Optional Of String
+    Return ReadClassesString("MIME\\Database\\Content Type\\" + mimeType, "Extension")
+End Function
+#End If
