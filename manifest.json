@@ -2,7 +2,7 @@
     "schema": 1,
     "name": "filetypes",
     "version": "0.1.0",
-    "description": "UTType and portable filename type guesses",
+    "description": "UTType and filename guesses",
     "platforms": [
         "arm64-apple-macos",
         "x86_64-apple-macos",

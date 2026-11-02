@@ -1,4 +1,4 @@
-# UTType and portable filename type guesses
+# UTType and filename guesses
 
 `Import filetypes`. Two APIs with different identities:
 
