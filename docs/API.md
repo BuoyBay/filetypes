@@ -17,6 +17,4 @@ Identifiers are only comparable within one namespace. Windows lookups read `HKEY
 
 Linux and Windows backends live in internal modules (`FileTypesLinuxBackend`, `FileTypesWindowsBackend`) whose declarations are copied from the container interop modules (`linuxcontent`, `WinRegistry`); the package imports no container code. Description and icon helpers stay in `linuxcontent`.
 
-Maintainers run the private validation suite before release. See the repository README for public build instructions.
-
 Inspired by [macoslib’s Cocoa examples](https://github.com/macoslib/macoslib); implemented independently against [Apple’s API](https://developer.apple.com/documentation/uniformtypeidentifiers/uttype).

@@ -9,15 +9,11 @@ related: ["index.md", "api.md", "typed-api.md"]
 
 # Getting started
 
-## Install and import
-
-Maintainers run the private validation suite before release. See the repository README for public build instructions.
-
 ## First use
 
 Pass an extension such as `pdf` or `.pdf`, rather than a complete filename or path. Read the copied identifier, description, preferred extension, and MIME type. Use `ConformsTo` with a parent type identifier when grouping related types.
 
-```buoy
+```basic
 Import filetypes
 
 Sub Main()
@@ -34,7 +30,7 @@ End Sub
 
 On any platform, guess from a name instead:
 
-```buoy
+```basic
 Import filetypes
 
 Sub Main()

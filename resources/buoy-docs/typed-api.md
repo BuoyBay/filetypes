@@ -13,8 +13,6 @@ related: ["api.md", "getting-started.md", "index.md"]
 
 Generated from the package source declarations. Platform guards are shown where present; inherited members are documented on the base type. See the [API contracts](api.md) for behavior and limitations.
 
-## FileTypes functions
-
 ### FileTypesSupported
 
 `Public Function FileTypesSupported() As Boolean`
@@ -168,8 +166,6 @@ A name-based file-type guess. Identifier is in the platform's native namespace (
 | `MIMEType` | `Optional Of String` | Yes | No | — | Preferred MIME type, or None when the platform has none registered. |
 | `IsUncertain` | `Boolean` | Yes | No | — | macOS: no extension or a dynamic (undeclared) type. Linux: GIO's own result_uncertain flag. Windows: no extension, or no registered Content Type for it. |
 
-## FileTypesLinuxBackend functions
-
 ### FileTypesLinuxAvailable
 
 `Public Function FileTypesLinuxAvailable() As Boolean`
@@ -242,8 +238,6 @@ Availability: `#If TargetLinux Then`
 | Type |
 | --- |
 | `Optional Of String` |
-
-## FileTypesWindowsBackend functions
 
 ### FileTypesWindowsContentType
 
