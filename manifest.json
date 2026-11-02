@@ -2,7 +2,7 @@
   "schema": 1,
   "name": "filetypes",
   "version": "0.1.0",
-  "description": "macOS UTType file-type information plus portable name-based file-type guesses with native identifiers and MIME types",
+  "description": "Identify file types through UTType and portable name guesses",
   "platforms": [
     "arm64-apple-macos",
     "x86_64-apple-macos",
